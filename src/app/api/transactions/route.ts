@@ -1,7 +1,6 @@
 import { getDb } from "@/lib/mongodb";
 
 const TYPES = ["income", "expense"] as const;
-const CURRENCIES = ["MNT", "USD"] as const;
 
 export async function POST(request: Request) {
   let body: Record<string, unknown>;
@@ -11,16 +10,17 @@ export async function POST(request: Request) {
     return Response.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
   }
 
-  const { type, currency, amount, date } = body;
+  const { type, amount, date, reason } = body;
+  const reasonText = typeof reason === "string" ? reason.trim() : "";
 
   if (!TYPES.includes(type as (typeof TYPES)[number])) {
     return Response.json({ ok: false, error: "Invalid type" }, { status: 400 });
   }
-  if (!CURRENCIES.includes(currency as (typeof CURRENCIES)[number])) {
-    return Response.json({ ok: false, error: "Invalid currency" }, { status: 400 });
-  }
   if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
     return Response.json({ ok: false, error: "Invalid amount" }, { status: 400 });
+  }
+  if (reasonText.length === 0 || reasonText.length > 80) {
+    return Response.json({ ok: false, error: "Invalid reason" }, { status: 400 });
   }
 
   // Use the selected date if provided, otherwise fall back to now
@@ -37,8 +37,8 @@ export async function POST(request: Request) {
     const db = await getDb();
     const result = await db.collection("transactions").insertOne({
       type,
-      currency,
       amount,
+      reason: reasonText,
       date: when,
       createdAt: new Date(),
     });

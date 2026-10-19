@@ -1,10 +1,9 @@
 "use client";
 
-import Image from "next/image";
 import { useEffect, useState } from "react";
+import { EXPENSE_REASONS, INCOME_REASONS } from "@/lib/reasons";
 
 type TxType = "income" | "expense";
-type Currency = "MNT" | "USD";
 type Status = "idle" | "loading" | "ok" | "error";
 
 const OPS = ["+", "−", "×", "÷"];
@@ -61,9 +60,34 @@ function formatDateLabel(value: string) {
   return { day, time };
 }
 
-function formatAmount(n: number, currency: Currency) {
+function formatAmount(n: number) {
   const s = n.toLocaleString("en-US", { maximumFractionDigits: 2 });
-  return currency === "MNT" ? `${s} ₮` : `$${s}`;
+  return `${s} ₮`;
+}
+
+type ReasonOption = { name: string; hint: string; builtIn: boolean };
+
+function toOptions(items: { label: string; hint: string }[]): ReasonOption[] {
+  return items.map((item) => ({ name: item.label, hint: item.hint, builtIn: true }));
+}
+
+const fallbackExpense = toOptions(EXPENSE_REASONS);
+const fallbackIncome = toOptions(INCOME_REASONS);
+
+function parseReasons(value: unknown): ReasonOption[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const row = item as { name?: unknown; hint?: unknown; builtIn?: unknown };
+    if (typeof row.name !== "string" || !row.name.trim()) return [];
+    return [
+      {
+        name: row.name,
+        hint: typeof row.hint === "string" ? row.hint : "",
+        builtIn: row.builtIn === true,
+      },
+    ];
+  });
 }
 
 const glow = "shadow-[0_0_18px_rgba(168,85,247,0.45)]";
@@ -77,7 +101,13 @@ export default function MoneyWizard() {
   const [healthError, setHealthError] = useState("");
 
   const [type, setType] = useState<TxType | null>("expense");
-  const [currency, setCurrency] = useState<Currency>("MNT");
+  const [reason, setReason] = useState<string | null>(null);
+  const [expenseReasons, setExpenseReasons] = useState<ReasonOption[]>(fallbackExpense);
+  const [incomeReasons, setIncomeReasons] = useState<ReasonOption[]>(fallbackIncome);
+  const [addingReason, setAddingReason] = useState(false);
+  const [reasonDraft, setReasonDraft] = useState("");
+  const [reasonBusy, setReasonBusy] = useState(false);
+  const [reasonsError, setReasonsError] = useState("");
   const [date, setDate] = useState("");
 
   const [expr, setExpr] = useState("");
@@ -85,6 +115,20 @@ export default function MoneyWizard() {
   const [saveMsg, setSaveMsg] = useState("");
 
   const result = evaluate(expr);
+  // Sign comes from the type (зарлага / орлого), so the amount itself stays positive.
+  const amount = result === null ? null : Math.abs(result);
+
+  async function loadReasons() {
+    const res = await fetch("/api/reasons");
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "Шалтгаан уншиж чадсангүй");
+    const expense = parseReasons(data.expense);
+    const income = parseReasons(data.income);
+    if (expense.length === 0 || income.length === 0) throw new Error("Шалтгаан уншиж чадсангүй");
+    setExpenseReasons(expense);
+    setIncomeReasons(income);
+    setReasonsError("");
+  }
 
   async function checkServer() {
     setHealth("loading");
@@ -96,6 +140,11 @@ export default function MoneyWizard() {
       setHealth("ok");
       setSave("idle");
       setDate(nowLocalStr());
+      try {
+        await loadReasons();
+      } catch (err) {
+        setReasonsError(err instanceof Error ? err.message : "Шалтгаан уншиж чадсангүй");
+      }
       setStep(2);
     } catch (err) {
       setHealth("error");
@@ -137,13 +186,74 @@ export default function MoneyWizard() {
     setSave("idle");
     setExpr((e) => {
       const r = evaluate(e);
-      const base = r === null || r < 0 ? 0 : r;
+      const base = r === null ? 0 : Math.abs(r);
       return String(base + n);
     });
   }
 
+  async function addCustomReason() {
+    const name = reasonDraft.trim();
+    if (!name || reasonBusy || !type) return;
+    const list = type === "income" ? incomeReasons : expenseReasons;
+    const setList = type === "income" ? setIncomeReasons : setExpenseReasons;
+    const existing = list.find((item) => item.name.toLowerCase() === name.toLowerCase());
+    if (existing) {
+      setReason(existing.name);
+      setReasonDraft("");
+      setAddingReason(false);
+      return;
+    }
+    setReasonBusy(true);
+    setReasonsError("");
+    try {
+      const res = await fetch("/api/reasons", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, type }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Хадгалж чадсангүй");
+      const saved = typeof data.name === "string" ? data.name : name;
+      setList((prev) =>
+        prev.some((item) => item.name.toLowerCase() === saved.toLowerCase())
+          ? prev
+          : [...prev, { name: saved, hint: "", builtIn: false }],
+      );
+      setReason(saved);
+      setReasonDraft("");
+      setAddingReason(false);
+    } catch (err) {
+      setReasonsError(err instanceof Error ? err.message : "Алдаа гарлаа");
+    } finally {
+      setReasonBusy(false);
+    }
+  }
+
+  async function removeCustomReason(name: string) {
+    if (reasonBusy || !type) return;
+    const setList = type === "income" ? setIncomeReasons : setExpenseReasons;
+    setReasonBusy(true);
+    setReasonsError("");
+    try {
+      const res = await fetch("/api/reasons", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, type }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Устгаж чадсангүй");
+      setList((prev) => prev.filter((item) => item.name !== name));
+      if (reason === name) setReason(null);
+    } catch (err) {
+      setReasonsError(err instanceof Error ? err.message : "Алдаа гарлаа");
+    } finally {
+      setReasonBusy(false);
+    }
+  }
+
   async function submit() {
-    if (result === null || result <= 0 || !type) return;
+    if (amount === null || amount <= 0 || !type) return;
+    if (!reason) return;
     setSave("loading");
     try {
       const res = await fetch("/api/transactions", {
@@ -151,8 +261,8 @@ export default function MoneyWizard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           type,
-          currency,
-          amount: result,
+          amount,
+          reason,
           date: date ? new Date(date).toISOString() : undefined,
         }),
       });
@@ -160,7 +270,7 @@ export default function MoneyWizard() {
       if (!res.ok || !data.ok) throw new Error(data.error || "Хадгалж чадсангүй");
       setSave("ok");
       setSaveMsg(
-        `${type === "income" ? "Орлого" : "Зарлага"} ${formatAmount(result, currency)} хадгалагдлаа`,
+        `${type === "income" ? "Орлого" : "Зарлага"} ${formatAmount(amount)} хадгалагдлаа`,
       );
       // Stay on the amount screen so the next entry can be typed right away
       setExpr("");
@@ -170,24 +280,23 @@ export default function MoneyWizard() {
     }
   }
 
-  const canNext2 = type !== null;
-  const canSave = result !== null && result > 0 && save !== "loading";
+  const canNext2 = type !== null && reason !== null;
+  const reasons = type === "income" ? incomeReasons : expenseReasons;
+  const canSave = amount !== null && amount > 0 && save !== "loading";
 
   const hasOp = /[+−×÷]/.test(expr);
   const lastCh = expr.slice(-1);
-  const symbol = currency === "MNT" ? "₮" : "$";
+  const symbol = "₮";
   const resultText =
     expr !== "" && result === null && hasOp
       ? "—"
-      : (result ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 });
+      : (amount ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 });
   const amountSize =
     resultText.length > 13 ? 28 : resultText.length > 10 ? 34 : resultText.length > 7 ? 40 : 48;
-  const signText =
-    expr === "" || result === null || result === 0 ? "" : type === "income" ? "+" : "−";
   const exprText = expr
     .replace(/\d+/g, (m) => Number(m).toLocaleString("en-US"))
     .replace(/([+−×÷])/g, " $1 ");
-  const quick = currency === "MNT" ? [1000, 5000, 10000, 50000] : [1, 5, 10, 50];
+  const quick = [1000, 5000, 10000, 50000];
   const keys: { label: string; aria: string; kind: "digit" | "op" | "back" }[] = [
     { label: "1", aria: "1", kind: "digit" },
     { label: "2", aria: "2", kind: "digit" },
@@ -260,13 +369,20 @@ export default function MoneyWizard() {
               <div className="grid grid-cols-2 gap-3">
                 {(
                   [
-                    ["expense", "↑ Зарлага"],
                     ["income", "↓ Орлого"],
+                    ["expense", "↑ Зарлага"],
                   ] as const
                 ).map(([value, label]) => (
                   <button
                     key={value}
-                    onClick={() => setType(value)}
+                    onClick={() => {
+                      if (value !== type) {
+                        setReason(null);
+                        setAddingReason(false);
+                        setReasonDraft("");
+                      }
+                      setType(value);
+                    }}
                     className={`h-14 rounded-xl border font-medium transition ${
                       type === value ? activeBtn : idleBtn
                     }`}
@@ -277,29 +393,73 @@ export default function MoneyWizard() {
               </div>
             </div>
 
-            <div>
-              <Label>Валют</Label>
-              <div className="grid grid-cols-2 gap-1 rounded-xl border border-zinc-800 bg-zinc-900 p-1">
-                {(
-                  [
-                    ["MNT", "₮ Төгрөг"],
-                    ["USD", "$ Доллар"],
-                  ] as const
-                ).map(([value, label]) => (
-                  <button
-                    key={value}
-                    onClick={() => setCurrency(value)}
-                    className={`h-10 rounded-lg text-sm font-medium transition ${
-                      currency === value
-                        ? "bg-purple-600 text-white"
-                        : "text-zinc-400 hover:text-zinc-200"
-                    }`}
+            {type && (
+              <div>
+                <Label>{type === "income" ? "Юунаас орлого орсон" : "Юунд зарлага гарсан"}</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  {reasons.map((item) => (
+                    <div key={item.name} className="relative min-w-0">
+                      <button
+                        type="button"
+                        title={item.hint || item.name}
+                        onClick={() => setReason(item.name)}
+                        className={`h-10 w-full truncate rounded-xl border px-2 text-[13px] font-medium transition ${
+                          item.builtIn ? "" : "pr-6"
+                        } ${reason === item.name ? activeBtn : idleBtn}`}
+                      >
+                        {item.name}
+                      </button>
+                      {!item.builtIn && (
+                        <button
+                          type="button"
+                          aria-label={`${item.name} устгах`}
+                          onClick={() => removeCustomReason(item.name)}
+                          disabled={reasonBusy}
+                          className="absolute top-1/2 right-1 flex h-6 w-6 -translate-y-1/2 items-center justify-center text-sm text-zinc-400 hover:text-zinc-200 disabled:opacity-50"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  {!addingReason && (
+                    <button
+                      type="button"
+                      onClick={() => setAddingReason(true)}
+                      className={`h-10 rounded-xl border text-[13px] font-medium transition ${idleBtn}`}
+                    >
+                      + Нэмэх
+                    </button>
+                  )}
+                </div>
+                {addingReason && (
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      addCustomReason();
+                    }}
+                    className="mt-2 flex gap-2"
                   >
-                    {label}
-                  </button>
-                ))}
+                    <input
+                      value={reasonDraft}
+                      onChange={(e) => setReasonDraft(e.target.value)}
+                      placeholder="Өөр шалтгаан"
+                      maxLength={80}
+                      autoFocus
+                      className="h-12 min-w-0 flex-1 rounded-xl border border-zinc-800 bg-zinc-900 px-3 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-purple-500"
+                    />
+                    <button
+                      type="submit"
+                      disabled={!reasonDraft.trim() || reasonBusy}
+                      className="h-12 rounded-xl bg-purple-600 px-4 text-sm font-medium text-white disabled:bg-zinc-800 disabled:text-zinc-500"
+                    >
+                      {reasonBusy ? "…" : "Нэмэх"}
+                    </button>
+                  </form>
+                )}
+                {reasonsError && <p className="mt-2 text-sm text-red-400">● {reasonsError}</p>}
               </div>
-            </div>
+            )}
 
             <div className="min-w-0">
               <Label>Огноо, цаг</Label>
@@ -360,19 +520,6 @@ export default function MoneyWizard() {
               </label>
             </div>
 
-            <div className="flex flex-1 items-center justify-center">
-              {/* GIF has a solid black background; lighten blend lets it melt into the dark card */}
-              <Image
-                src="/coin.gif"
-                alt=""
-                width={180}
-                height={180}
-                unoptimized
-                loading="eager"
-                className="h-auto w-[45%] max-w-[180px] mix-blend-lighten"
-              />
-            </div>
-
             <NavButtons
               onBack={() => setStep(1)}
               onNext={() => setStep(3)}
@@ -385,7 +532,10 @@ export default function MoneyWizard() {
         {step === 3 && (
           <div className="flex flex-1 flex-col gap-3">
             <div className="flex min-h-[140px] flex-1 flex-col items-center justify-center gap-2.5 text-center">
-              <div className="text-[13px] text-[#8E8E96]">Дүн</div>
+              <div className="text-[13px] text-[#8E8E96]">
+                {type === "expense" ? "Зарлага" : "Орлого"}
+                {reason ? ` · ${reason}` : ""}
+              </div>
               <div aria-live="polite" className="flex max-w-full items-baseline justify-center gap-1.5">
                 <span
                   className={`break-all font-extrabold leading-[1.1] tracking-[-0.03em] tabular-nums ${
@@ -393,7 +543,6 @@ export default function MoneyWizard() {
                   }`}
                   style={{ fontSize: amountSize }}
                 >
-                  {signText}
                   {resultText}
                 </span>
                 <span className="text-[22px] font-bold text-[#8E8E96]">{symbol}</span>
