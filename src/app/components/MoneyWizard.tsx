@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { EXPENSE_REASONS, INCOME_REASONS } from "@/lib/reasons";
 
@@ -322,9 +323,14 @@ export default function MoneyWizard() {
       style={{ fontFamily: "var(--font-manrope), system-ui, sans-serif" }}
     >
       <header className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight text-white">
-          Мөнгөний <span className="text-purple-400">тэмдэглэл</span>
-        </h1>
+        <div className="flex items-start justify-between gap-3">
+          <h1 className="text-2xl font-semibold tracking-tight text-white">
+            Мөнгөний <span className="text-purple-400">тэмдэглэл</span>
+          </h1>
+          <Link href="/dashboard" className="mt-1 shrink-0 text-sm font-medium text-purple-300">
+            Хяналт
+          </Link>
+        </div>
         <div className="mt-4 flex gap-2">
           {[1, 2, 3].map((s) => (
             <div
